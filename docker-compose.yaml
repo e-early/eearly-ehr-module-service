@@ -1,0 +1,166 @@
+services:
+  eearly-ehr-keycloak-db:
+    image: postgres:17
+    container_name: eearly-ehr-keycloak-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${keycloak_db_name}
+      POSTGRES_USER: ${keycloak_db_user}
+      POSTGRES_PASSWORD: ${keycloak_db_password}
+    
+    ports:
+      - 5438:5432
+
+    volumes:
+      - keycloak-postgres-data:/var/lib/postgresql/data
+
+    networks:
+      - ehr-keycloak-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${keycloak_db_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  eearly-ehr-keycloak:
+    image: keycloak/keycloak:26.5.1
+    container_name: eearly-ehr-keycloak
+    restart: unless-stopped
+
+    depends_on:
+      eearly-ehr-keycloak-db:
+        condition: service_healthy
+
+    environment:
+      KEYCLOAK_ADMIN: ${keycloak_admin_user}
+      KEYCLOAK_ADMIN_PASSWORD: ${keycloak_admin_password}
+
+      KC_HOSTNAME_STRICT: false
+
+      KC_PROXY_HEADERS: xforwarded
+      PROXY_ADDRESS_FORWARDING: true
+      KC_HTTP_ENABLED: true
+
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://eearly-ehr-keycloak-db:5432/${keycloak_db_name}
+      KC_DB_USERNAME: ${keycloak_db_user}
+      KC_DB_PASSWORD: ${keycloak_db_password}
+
+      KC_HEALTH_ENABLED: true
+      KC_METRICS_ENABLED: true
+
+      KC_LOG_LEVEL: INFO
+      KC_LOG_CONSOLE_OUTPUT: json
+
+      KC_CACHE: local
+
+    ports:
+      - 9092:8080
+      - 9012:9000
+    
+    volumes:
+      - ./realm-config:/opt/keycloak/data/import:ro
+
+    networks:
+      - ehr-keycloak-network
+
+    command: ["start", "--import-realm"]
+
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+  eearly-ehr-db:
+    image: ehrbase/ehrbase-v2-postgres:16.2
+    shm_size: 1g
+    container_name: eearly-ehr-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      EHRBASE_USER_ADMIN: ehrbase
+      EHRBASE_PASSWORD_ADMIN: ehrbase
+      EHRBASE_USER: ehrbase_restricted
+      EHRBASE_PASSWORD: ehrbase_restricted
+
+    ports:
+      - 5434:5432
+
+    volumes:
+      - service-postgres-data:/var/lib/postgresql/data
+
+    networks:
+      - ehrbase-net
+
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  eearly-ehr-service:
+    image: ehrbase/ehrbase:2.34.0
+    container_name: eearly-ehr-service
+    restart: unless-stopped
+
+    depends_on:
+      eearly-ehr-db:
+        condition: service_healthy
+      eearly-ehr-keycloak:
+        condition: service_healthy
+  
+    environment:
+      DB_URL: jdbc:postgresql://eearly-ehr-db:5432/ehrbase
+      DB_USER_ADMIN: ehrbase
+      DB_PASS_ADMIN: ehrbase
+      DB_USER: ehrbase_restricted
+      DB_PASS: ehrbase_restricted
+
+      SERVER_NODENAME: local.ehrbase.org
+
+      SECURITY_AUTHUSER: ${security_auth_user}
+      SECURITY_AUTHPASSWORD: ${security_auth_password}
+      SECURITY_AUTHADMINUSER: ${security_auth_admin_user}
+      SECURITY_AUTHADMINPASSWORD: ${security_auth_admin_password}
+      SECURITY_OAUTH2USERROLE: USER
+      SECURITY_OAUTH2ADMINROLE: ADMIN
+
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE: env,health,info,metrics,prometheus
+      MANAGEMENT_ENDPOINTS_WEB_BASEPATH: /management
+      MANAGEMENT_ENDPOINT_ENV_ACCESS: read_only
+      MANAGEMENT_ENDPOINT_HEALTH_ACCESS: read_only
+      MANAGEMENT_ENDPOINT_HEALTH_DATASOURCE_ACCESS: read_only
+      MANAGEMENT_ENDPOINT_INFO_ACCESS: read_only
+      MANAGEMENT_ENDPOINT_METRICS_ACCESS: read_only
+      MANAGEMENT_ENDPOINT_PROMETHEUS_ACCESS: read_only
+      MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: false
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/ehrbase/rest/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    ports:
+      - 8000:8080
+
+    networks:
+      - ehrbase-net
+
+volumes:
+  service-postgres-data:
+    driver: local
+  keycloak-postgres-data:
+    driver: local
+
+networks:
+  ehrbase-net:
+    name: ehrbase-net
+    driver: bridge
+  ehr-keycloak-network:
+    driver: bridge
