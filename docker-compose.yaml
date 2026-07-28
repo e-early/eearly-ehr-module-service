@@ -152,6 +152,27 @@ services:
     networks:
       - ehrbase-net
 
+  eearly-ehr-template-loader:
+    image: curlimages/curl:8.18.0
+    container_name: eearly-ehr-template-loader
+    restart: "no"
+
+    depends_on:
+      eearly-ehr-service:
+        condition: service_healthy
+
+    environment:
+      EHRBASE_URL: http://eearly-ehr-service:8080
+
+    volumes:
+      - ./templates:/templates:ro
+      - ./template-loader/loader.sh:/loader.sh:ro
+
+    entrypoint: ["/bin/sh", "/loader.sh"]
+
+    networks:
+      - ehrbase-net
+
 volumes:
   service-postgres-data:
     driver: local

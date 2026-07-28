@@ -1,93 +1,116 @@
 # eEarly EHR Module OpenSource
 
+This repository contains the deployment configuration for the EHRbase-based clinical
+data store used by eEarly: Docker Compose orchestration, environment configuration,
+and the Keycloak realm used for OAuth2 authentication.
 
+## 1. EHRbase endpoints in use
 
-## Getting started
+eEarly's backend talks to EHRbase exclusively through a single client class. The
+endpoints below are the full API surface that a replacement storage layer needs to
+support:
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+| Method | Path                          | Purpose                                                                 |
+|--------|-------------------------------|--------------------------------------------------------------------------|
+| `PUT`  | `/ehr/{ehrId}`                | Create a new EHR record                                                  |
+| `GET`  | `/ehr/{ehrId}`                | Check whether an EHR exists (200 vs. 404)                                |
+| `POST` | `/ehr/{ehrId}/composition`    | Store a composition (contribution)                                       |
+| `POST` | `/query/aql`                  | Run AQL queries to fetch measurements, paginated via `fetch`/`offset`    |
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+All requests carry `Authorization: Bearer <token>`, obtained via an OAuth2
+client-credentials grant against the Keycloak realm in this repo (see
+[`realm-config/eearly-ehrbase-realm.json`](realm-config/eearly-ehrbase-realm.json),
+client `ehrbase`).
 
-## Add your files
+The AQL queries used against `/query/aql` select observation data
+(`archetype_node_id`, event value/units/magnitude, timestamps, device id) via
+`EHR CONTAINS COMPOSITION CONTAINS OBSERVATION`, filtered by `ehr_id`, optional time
+range, and optional `archetype_node_id` matches. A compatible storage layer needs to
+support this query shape for `/query/aql` to be a drop-in replacement. Full request/
+response semantics for all endpoints follow the standard openEHR ITS-REST
+specification: https://specifications.openehr.org/releases/ITS-REST/Release-1.1.0
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## 2. EHRbase source and version
 
-```
-cd existing_repo
-git remote add origin https://git.result.si/eearly/eearly-ehr-module-opensource.git
-git branch -M master
-git push -uf origin master
-```
+We run the official, unmodified EHRbase image — no custom fork or patches. Pulling
+the matching upstream revision:
 
-## Integrate with your tools
+- Project: https://github.com/ehrbase/ehrbase
+- Version running in this environment: **2.34.0** (see `eearly-ehr-service` in
+  [`docker-compose.yaml`](docker-compose.yaml))
 
-- [ ] [Set up project integrations](https://git.result.si/eearly/eearly-ehr-module-opensource/-/settings/integrations)
+## 3. Environment setup — step by step
 
-## Collaborate with your team
+Prerequisites: Docker and Docker Compose.
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+1. Clone this repository.
+2. Review [`.env`](.env) and replace the placeholder values with your own
+   credentials — **the values checked into this repo are placeholders only and
+   must not be reused as-is.**
+3. Start the stack:
+   ```bash
+   docker compose up -d
+   ```
+   This brings up five services: a Postgres database for Keycloak
+   (`eearly-ehr-keycloak-db`), Keycloak itself (`eearly-ehr-keycloak`), a Postgres
+   database for EHRbase (`eearly-ehr-db`, using the `ehrbase/ehrbase-v2-postgres`
+   image), EHRbase itself (`eearly-ehr-service`), and `eearly-ehr-template-loader`,
+   which uploads every template in [`templates/`](templates) to EHRbase once it's
+   healthy, then exits.
+4. On startup, Keycloak automatically imports the realm from
+   [`realm-config/eearly-ehrbase-realm.json`](realm-config/eearly-ehrbase-realm.json)
+   (mounted read-only, `command: ["start", "--import-realm"]`).
+5. Once healthy:
+   - EHRbase REST API: `http://localhost:8000/ehrbase/rest/...`
+     (status check: `http://localhost:8000/ehrbase/rest/status`)
+   - Keycloak: `http://localhost:9092` (admin), management/health endpoints on
+     `9012`
+   - EHRbase management endpoints (`/management/health`, `/management/info`,
+     `/management/metrics`, `/management/prometheus`) are exposed read-only.
+6. EHRbase is configured for OAuth2 authentication against the Keycloak realm
+   (`SECURITY_OAUTH2USERROLE=USER`, `SECURITY_OAUTH2ADMINROLE=ADMIN`), with a basic
+   auth fallback controlled by the `security_auth_*` variables in `.env`.
 
-## Test and Deploy
+## 4. Dependencies
 
-Use the built-in continuous integration in GitLab.
+- **EHRbase** `2.34.0` — https://github.com/ehrbase/ehrbase (image:
+  `ehrbase/ehrbase:2.34.0`)
+- **EHRbase Postgres image** `16.2` — image: `ehrbase/ehrbase-v2-postgres:16.2`
+- **Keycloak** `26.5.1` — https://www.keycloak.org/ / https://github.com/keycloak/keycloak
+  (image: `keycloak/keycloak:26.5.1`)
+- **PostgreSQL** `17` (Keycloak's own database) — image: `postgres:17`
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+No additional services (reverse proxy, message broker, etc.) are required to run
+this environment standalone.
 
-***
+## 5. Configuration files
 
-# Editing this README
+All configuration needed to reproduce the environment is in this repository:
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+- [`docker-compose.yaml`](docker-compose.yaml) — orchestrates all four services,
+  networking, volumes, and health checks.
+- [`.env`](.env) — environment variables consumed by `docker-compose.yaml`
+  (database credentials, Keycloak admin credentials, EHRbase basic-auth
+  credentials). Values are placeholders and must be rotated before any
+  non-local use.
+- [`realm-config/eearly-ehrbase-realm.json`](realm-config/eearly-ehrbase-realm.json)
+  — Keycloak realm export, auto-imported on container startup. **This export
+  currently contains a live client secret for the `ehrbase` client rather than a
+  placeholder.** Rotate that secret in Keycloak and scrub it from the export
+  before deploying this realm anywhere beyond local development.
 
-## Suggestions for a good README
+## 6. Templates
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+[`templates/`](templates) contains the seven openEHR templates (`.opt` files) that
+define eEarly's clinical data structures — one per measurement type (blood
+pressure, blood glucose, body weight, body height, pulse, pulse oximetry, body
+temperature). These templates are the only customization on top of stock
+EHRbase; everything else in this environment is official, unmodified EHRbase
+configuration (see [section 2](#2-ehrbase-source-and-version)).
 
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+They're loaded automatically: the `eearly-ehr-template-loader` service
+([`template-loader/loader.sh`](template-loader/loader.sh)) waits for EHRbase to
+become healthy, then `POST`s each template to
+`/definition/template/adl1.4` and exits — no manual step required after
+`docker compose up -d`. Re-running the stack is safe; templates that already
+exist are skipped (EHRbase returns `409`).
